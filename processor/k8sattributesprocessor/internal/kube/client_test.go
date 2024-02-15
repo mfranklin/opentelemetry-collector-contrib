@@ -79,12 +79,16 @@ func podAddAndUpdateTest(t *testing.T, c *WatchClient, handler func(obj any)) {
 	pod.Status.PodIP = "2.2.2.2"
 	pod.UID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	handler(pod)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	got = c.Pods[newPodIdentifier("connection", "k8s.pod.ip", "2.2.2.2")]
 	assert.Equal(t, "2.2.2.2", got.Address)
 	assert.Equal(t, "podC", got.Name)
 	assert.Equal(t, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", got.PodUID)
 	got = c.Pods[newPodIdentifier("resource_attribute", "k8s.pod.uid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]
+	assert.Equal(t, "2.2.2.2", got.Address)
+	assert.Equal(t, "podC", got.Name)
+	assert.Equal(t, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", got.PodUID)
+	got = c.Pods[newPodIdentifier("datapoint_attribute", "k8s.pod.uid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]
 	assert.Equal(t, "2.2.2.2", got.Address)
 	assert.Equal(t, "podC", got.Name)
 	assert.Equal(t, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", got.PodUID)
@@ -1954,6 +1958,14 @@ func newTestClientWithRulesAndFilters(t *testing.T, f Filters) (*WatchClient, *o
 			Sources: []AssociationSource{
 				{
 					From: "resource_attribute",
+					Name: "k8s.pod.uid",
+				},
+			},
+		},
+		{
+			Sources: []AssociationSource{
+				{
+					From: "datapoint_attribute",
 					Name: "k8s.pod.uid",
 				},
 			},
