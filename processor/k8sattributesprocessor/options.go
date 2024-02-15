@@ -315,32 +315,53 @@ func withFilterFields(filters ...FieldFilterConfig) option {
 	}
 }
 
-// withExtractPodAssociations allows specifying options to associate pod metadata with incoming resource
+// withExtractPodAssociations allows specifying options to associate pod metadata with incoming resource or datapoint
 func withExtractPodAssociations(podAssociations ...PodAssociationConfig) option {
 	return func(p *kubernetesprocessor) error {
-		associations := make([]kube.Association, 0, len(podAssociations))
-		var assoc kube.Association
-		for _, association := range podAssociations {
-			assoc = kube.Association{
-				Sources: []kube.AssociationSource{},
-			}
+		var resourceAssociations []kube.Association
+		var datapointAssociations []kube.Association
 
+		for _, association := range podAssociations {
+			var resourceSources []kube.AssociationSource
+			var datapointSources []kube.AssociationSource
 			var name string
 
 			for _, associationSource := range association.Sources {
+				if associationSource.From == kube.DatapointSource {
+					datapointSources = append(datapointSources, kube.AssociationSource{
+						From: associationSource.From,
+						Name: associationSource.Name,
+					})
+					continue
+				}
 				if associationSource.From == kube.ConnectionSource {
 					name = ""
 				} else {
 					name = associationSource.Name
 				}
-				assoc.Sources = append(assoc.Sources, kube.AssociationSource{
+				resourceSources = append(resourceSources, kube.AssociationSource{
 					From: associationSource.From,
 					Name: name,
 				})
 			}
-			associations = append(associations, assoc)
+			if len(resourceSources) > 0 {
+				resourceAssociations = append(resourceAssociations,
+					kube.Association{
+						Sources: resourceSources,
+					},
+				)
+			}
+			if len(datapointSources) > 0 {
+				datapointAssociations = append(datapointAssociations,
+					kube.Association{
+						Sources: datapointSources,
+					},
+				)
+			}
+
 		}
-		p.podAssociations = associations
+		p.podResourceAssociations = resourceAssociations
+		p.podDatapointAssociations = datapointAssociations
 		return nil
 	}
 }

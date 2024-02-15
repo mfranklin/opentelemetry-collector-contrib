@@ -25,17 +25,18 @@ const (
 )
 
 type kubernetesprocessor struct {
-	cfg               component.Config
-	options           []option
-	telemetrySettings component.TelemetrySettings
-	logger            *zap.Logger
-	apiConfig         k8sconfig.APIConfig
-	kc                kube.Client
-	passthroughMode   bool
-	rules             kube.ExtractionRules
-	filters           kube.Filters
-	podAssociations   []kube.Association
-	podIgnore         kube.Excludes
+	cfg                      component.Config
+	options                  []option
+	telemetrySettings        component.TelemetrySettings
+	logger                   *zap.Logger
+	apiConfig                k8sconfig.APIConfig
+	kc                       kube.Client
+	passthroughMode          bool
+	rules                    kube.ExtractionRules
+	filters                  kube.Filters
+	podResourceAssociations  []kube.Association
+	podDatapointAssociations []kube.Association
+	podIgnore                kube.Excludes
 }
 
 func (kp *kubernetesprocessor) initKubeClient(logger *zap.Logger, kubeClient kube.ClientProvider) error {
@@ -43,7 +44,7 @@ func (kp *kubernetesprocessor) initKubeClient(logger *zap.Logger, kubeClient kub
 		kubeClient = kube.New
 	}
 	if !kp.passthroughMode {
-		kc, err := kubeClient(logger, kp.apiConfig, kp.rules, kp.filters, kp.podAssociations, kp.podIgnore, nil, nil, nil, nil)
+		kc, err := kubeClient(logger, kp.apiConfig, kp.rules, kp.filters, append(kp.podResourceAssociations, kp.podDatapointAssociations...), kp.podIgnore, nil, nil, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -100,7 +101,9 @@ func (kp *kubernetesprocessor) processTraces(ctx context.Context, td ptrace.Trac
 func (kp *kubernetesprocessor) processMetrics(ctx context.Context, md pmetric.Metrics) (pmetric.Metrics, error) {
 	rm := md.ResourceMetrics()
 	for i := 0; i < rm.Len(); i++ {
-		kp.processResource(ctx, rm.At(i).Resource())
+		resource := rm.At(i)
+		kp.processResource(ctx, resource.Resource())
+		kp.processResourceDatapoints(ctx, resource.ScopeMetrics())
 	}
 
 	return md, nil
@@ -118,7 +121,7 @@ func (kp *kubernetesprocessor) processLogs(ctx context.Context, ld plog.Logs) (p
 
 // processResource adds Pod metadata tags to resource based on pod association configuration
 func (kp *kubernetesprocessor) processResource(ctx context.Context, resource pcommon.Resource) {
-	podIdentifierValue := extractPodID(ctx, resource.Attributes(), kp.podAssociations)
+	podIdentifierValue := extractPodID(ctx, resource.Attributes(), kp.podResourceAssociations)
 	kp.logger.Debug("evaluating pod identifier", zap.Any("value", podIdentifierValue))
 
 	for i := range podIdentifierValue {
@@ -133,6 +136,54 @@ func (kp *kubernetesprocessor) processResource(ctx context.Context, resource pco
 		return
 	}
 
+	kp.processAttributes(resource.Attributes(), podIdentifierValue)
+}
+
+func (kp *kubernetesprocessor) processResourceDatapoints(ctx context.Context, metrics pmetric.ScopeMetricsSlice) {
+	for i := 0; i < metrics.Len(); i++ {
+		scopeMetrics := metrics.At(i).Metrics()
+		for j := 0; j < scopeMetrics.Len(); j++ {
+			scopeMetric := scopeMetrics.At(j)
+			switch scopeMetric.Type() {
+			case pmetric.MetricTypeGauge:
+				datapoints := scopeMetric.Gauge().DataPoints()
+				for k := 0; k < datapoints.Len(); k++ {
+					kp.processDatapointAssociations(ctx, datapoints.At(k).Attributes())
+				}
+			case pmetric.MetricTypeHistogram:
+				datapoints := scopeMetric.Histogram().DataPoints()
+				for k := 0; k < datapoints.Len(); k++ {
+					kp.processDatapointAssociations(ctx, datapoints.At(k).Attributes())
+				}
+			case pmetric.MetricTypeExponentialHistogram:
+				datapoints := scopeMetric.ExponentialHistogram().DataPoints()
+				for k := 0; k < datapoints.Len(); k++ {
+					kp.processDatapointAssociations(ctx, datapoints.At(k).Attributes())
+				}
+			case pmetric.MetricTypeSum:
+				datapoints := scopeMetric.Sum().DataPoints()
+				for k := 0; k < datapoints.Len(); k++ {
+					kp.processDatapointAssociations(ctx, datapoints.At(k).Attributes())
+				}
+			case pmetric.MetricTypeSummary:
+				datapoints := scopeMetric.Summary().DataPoints()
+				for k := 0; k < datapoints.Len(); k++ {
+					kp.processDatapointAssociations(ctx, datapoints.At(k).Attributes())
+				}
+			case pmetric.MetricTypeEmpty:
+				kp.logger.Warn("Found empty metric type", zap.String("name", scopeMetric.Name()))
+			}
+		}
+	}
+}
+
+func (kp *kubernetesprocessor) processDatapointAssociations(ctx context.Context, attributes pcommon.Map) {
+	podIdentifierValue := extractPodID(ctx, attributes, kp.podDatapointAssociations)
+	kp.logger.Debug("evaluating pod identifier for datapoint", zap.Any("value", podIdentifierValue))
+	kp.processAttributes(attributes, podIdentifierValue)
+}
+
+func (kp *kubernetesprocessor) processAttributes(attributes pcommon.Map, podIdentifierValue kube.PodIdentifier) {
 	var pod *kube.Pod
 	if podIdentifierValue.IsNotEmpty() {
 		var podFound bool
@@ -140,30 +191,30 @@ func (kp *kubernetesprocessor) processResource(ctx context.Context, resource pco
 			kp.logger.Debug("getting the pod", zap.Any("pod", pod))
 
 			for key, val := range pod.Attributes {
-				if _, found := resource.Attributes().Get(key); !found {
-					resource.Attributes().PutStr(key, val)
+				if _, found := attributes.Get(key); !found {
+					attributes.PutStr(key, val)
 				}
 			}
-			kp.addContainerAttributes(resource.Attributes(), pod)
+			kp.addContainerAttributes(attributes, pod)
 		}
 	}
 
-	namespace := getNamespace(pod, resource.Attributes())
+	namespace := getNamespace(pod, attributes)
 	if namespace != "" {
 		attrsToAdd := kp.getAttributesForPodsNamespace(namespace)
 		for key, val := range attrsToAdd {
-			if _, found := resource.Attributes().Get(key); !found {
-				resource.Attributes().PutStr(key, val)
+			if _, found := attributes.Get(key); !found {
+				attributes.PutStr(key, val)
 			}
 		}
 	}
 
-	nodeName := getNodeName(pod, resource.Attributes())
+	nodeName := getNodeName(pod, attributes)
 	if nodeName != "" {
 		attrsToAdd := kp.getAttributesForPodsNode(nodeName)
 		for key, val := range attrsToAdd {
-			if _, found := resource.Attributes().Get(key); !found {
-				resource.Attributes().PutStr(key, val)
+			if _, found := attributes.Get(key); !found {
+				attributes.PutStr(key, val)
 			}
 		}
 	}
