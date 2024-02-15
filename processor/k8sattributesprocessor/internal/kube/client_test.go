@@ -315,7 +315,7 @@ func TestPodHostNetwork(t *testing.T) {
 	pod.UID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	pod.Spec.HostNetwork = true
 	c.handlePodAdd(pod)
-	assert.Equal(t, 1, len(c.Pods))
+	assert.Equal(t, 2, len(c.Pods))
 	got := c.Pods[newPodIdentifier("resource_attribute", "k8s.pod.uid", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")]
 	assert.Equal(t, "2.2.2.2", got.Address)
 	assert.Equal(t, "podB", got.Name)
@@ -334,7 +334,7 @@ func TestPodCreate(t *testing.T) {
 	pod.Name = "podD"
 	pod.UID = "11111111-2222-3333-4444-555555555555"
 	c.handlePodAdd(pod)
-	assert.Equal(t, 1, len(c.Pods))
+	assert.Equal(t, 2, len(c.Pods))
 	got := c.Pods[newPodIdentifier("resource_attribute", "k8s.pod.uid", "11111111-2222-3333-4444-555555555555")]
 	assert.Equal(t, "", got.Address)
 	assert.Equal(t, "podD", got.Name)
@@ -345,7 +345,7 @@ func TestPodCreate(t *testing.T) {
 	startTime := meta_v1.NewTime(time.Now())
 	pod.Status.StartTime = &startTime
 	c.handlePodUpdate(&api_v1.Pod{}, pod)
-	assert.Equal(t, 1, len(c.Pods))
+	assert.Equal(t, 2, len(c.Pods))
 	got = c.Pods[newPodIdentifier("resource_attribute", "k8s.pod.uid", "11111111-2222-3333-4444-555555555555")]
 	assert.Equal(t, "", got.Address)
 	assert.Equal(t, "podD", got.Name)
@@ -354,7 +354,7 @@ func TestPodCreate(t *testing.T) {
 	// pod is Running and has an IP address
 	pod.Status.PodIP = "3.3.3.3"
 	c.handlePodUpdate(&api_v1.Pod{}, pod)
-	assert.Equal(t, 3, len(c.Pods))
+	assert.Equal(t, 4, len(c.Pods))
 	got = c.Pods[newPodIdentifier("resource_attribute", "k8s.pod.uid", "11111111-2222-3333-4444-555555555555")]
 	assert.Equal(t, "3.3.3.3", got.Address)
 	assert.Equal(t, "podD", got.Name)
@@ -439,7 +439,7 @@ func TestNodeUpdate(t *testing.T) {
 func TestPodDelete(t *testing.T) {
 	c, _ := newTestClient(t)
 	podAddAndUpdateTest(t, c, c.handlePodAdd)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	assert.Equal(t, "1.1.1.1", c.Pods[newPodIdentifier("connection", "k8s.pod.ip", "1.1.1.1")].Address)
 
 	// delete empty IP pod
@@ -450,7 +450,7 @@ func TestPodDelete(t *testing.T) {
 	pod := &api_v1.Pod{}
 	pod.Status.PodIP = "9.9.9.9"
 	c.handlePodDelete(pod)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	got := c.Pods[newPodIdentifier("connection", "k8s.pod.ip", "1.1.1.1")]
 	assert.Equal(t, "1.1.1.1", got.Address)
 	assert.Equal(t, 0, len(c.deleteQueue))
@@ -461,7 +461,7 @@ func TestPodDelete(t *testing.T) {
 	pod.Status.PodIP = "1.1.1.1"
 	c.handlePodDelete(pod)
 	got = c.Pods[newPodIdentifier("connection", "k8s.pod.ip", "1.1.1.1")]
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	assert.Equal(t, "1.1.1.1", got.Address)
 	assert.Equal(t, 0, len(c.deleteQueue))
 
@@ -472,7 +472,7 @@ func TestPodDelete(t *testing.T) {
 	pod.Status.PodIP = "1.1.1.1"
 	tsBeforeDelete := time.Now()
 	c.handlePodDelete(pod)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	assert.Equal(t, 3, len(c.deleteQueue))
 	deleteRequest := c.deleteQueue[0]
 	assert.Equal(t, newPodIdentifier("connection", "k8s.pod.ip", "1.1.1.1"), deleteRequest.id)
@@ -488,8 +488,8 @@ func TestPodDelete(t *testing.T) {
 	pod.UID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	tsBeforeDelete = time.Now()
 	c.handlePodDelete(cache.DeletedFinalStateUnknown{Obj: pod})
-	assert.Equal(t, 5, len(c.Pods))
-	assert.Equal(t, 5, len(c.deleteQueue))
+	assert.Equal(t, 6, len(c.Pods))
+	assert.Equal(t, 6, len(c.deleteQueue))
 	deleteRequest = c.deleteQueue[0]
 	assert.Equal(t, newPodIdentifier("connection", "k8s.pod.ip", "2.2.2.2"), deleteRequest.id)
 	assert.Equal(t, "podC", deleteRequest.podName)
@@ -575,7 +575,7 @@ func TestNodeDelete(t *testing.T) {
 func TestDeleteQueue(t *testing.T) {
 	c, _ := newTestClient(t)
 	podAddAndUpdateTest(t, c, c.handlePodAdd)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	assert.Equal(t, "1.1.1.1", c.Pods[newPodIdentifier("connection", "k8s.pod.ip", "1.1.1.1")].Address)
 
 	// delete pod
@@ -583,7 +583,7 @@ func TestDeleteQueue(t *testing.T) {
 	pod.Name = "podB"
 	pod.Status.PodIP = "1.1.1.1"
 	c.handlePodDelete(pod)
-	assert.Equal(t, 5, len(c.Pods))
+	assert.Equal(t, 6, len(c.Pods))
 	assert.Equal(t, 3, len(c.deleteQueue))
 }
 
