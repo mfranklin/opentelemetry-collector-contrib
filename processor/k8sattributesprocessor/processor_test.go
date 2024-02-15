@@ -217,6 +217,16 @@ func (m *multiTest) assertResource(batchNum int, resourceFunc func(res pcommon.R
 	}
 }
 
+func (m *multiTest) assertMetricDatapoint(batchNum int, metricFunc func(metric pmetric.NumberDataPoint)) {
+	rss := m.nextMetrics.AllMetrics()[batchNum].ResourceMetrics()
+
+	r := rss.At(0)
+	dp := r.ScopeMetrics().At(0).Metrics().At(0).Sum().DataPoints().At(0)
+	if metricFunc != nil {
+		metricFunc(dp)
+	}
+}
+
 func TestNewProcessor(t *testing.T) {
 	cfg := NewFactory().CreateDefaultConfig()
 
@@ -234,14 +244,14 @@ func TestProcessorBadClientProvider(t *testing.T) {
 	}, withKubeClientProvider(clientProvider))
 }
 
-type generateResourceFunc func(res pcommon.Resource)
+type generateResourceFunc func(res pcommon.Resource, datapoint *pmetric.NumberDataPoint)
 
 func generateTraces(resourceFunc ...generateResourceFunc) ptrace.Traces {
 	t := ptrace.NewTraces()
 	rs := t.ResourceSpans().AppendEmpty()
 	for _, resFun := range resourceFunc {
 		res := rs.Resource()
-		resFun(res)
+		resFun(res, nil)
 	}
 	span := rs.ScopeSpans().AppendEmpty().Spans().AppendEmpty()
 	span.SetName("foobar")
@@ -251,12 +261,14 @@ func generateTraces(resourceFunc ...generateResourceFunc) ptrace.Traces {
 func generateMetrics(resourceFunc ...generateResourceFunc) pmetric.Metrics {
 	m := pmetric.NewMetrics()
 	ms := m.ResourceMetrics().AppendEmpty()
+	metric := ms.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
+	metric.SetEmptySum()
+	metric.SetName("foobar")
+	datapoint := metric.Sum().DataPoints().AppendEmpty()
 	for _, resFun := range resourceFunc {
 		res := ms.Resource()
-		resFun(res)
+		resFun(res, &datapoint)
 	}
-	metric := ms.ScopeMetrics().AppendEmpty().Metrics().AppendEmpty()
-	metric.SetName("foobar")
 	return m
 }
 
@@ -265,45 +277,51 @@ func generateLogs(resourceFunc ...generateResourceFunc) plog.Logs {
 	ls := l.ResourceLogs().AppendEmpty()
 	for _, resFun := range resourceFunc {
 		res := ls.Resource()
-		resFun(res)
+		resFun(res, nil)
 	}
 	ls.ScopeLogs().AppendEmpty().LogRecords().AppendEmpty()
 	return l
 }
 
 func withPassthroughIP(passthroughIP string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr(kube.K8sIPLabelName, passthroughIP)
 	}
 }
 
 func withHostname(hostname string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr(conventions.AttributeHostName, hostname)
 	}
 }
 
 func withPodUID(uid string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr("k8s.pod.uid", uid)
 	}
 }
 
 func withContainerName(containerName string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr(conventions.AttributeK8SContainerName, containerName)
 	}
 }
 
 func withContainerID(id string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr(conventions.AttributeContainerID, id)
 	}
 }
 
 func withContainerRunID(containerRunID string) generateResourceFunc {
-	return func(res pcommon.Resource) {
+	return func(res pcommon.Resource, dp *pmetric.NumberDataPoint) {
 		res.Attributes().PutStr(conventions.AttributeK8SContainerRestartCount, containerRunID)
+	}
+}
+
+func withDatapointAttribute(key string, value string) generateResourceFunc {
+	return func(res pcommon.Resource, metric *pmetric.NumberDataPoint) {
+		metric.Attributes().PutStr(key, value)
 	}
 }
 
@@ -569,7 +587,7 @@ func TestIPSourceWithPodAssociation(t *testing.T) {
 		},
 	}
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Name: "k8s.pod.ip",
 				Sources: []kube.AssociationSource{
@@ -627,6 +645,73 @@ func TestIPSourceWithPodAssociation(t *testing.T) {
 	}
 }
 
+func TestIPSourceWithPodDatapointAssociation(t *testing.T) {
+	m := newMultiTest(
+		t,
+		NewFactory().CreateDefaultConfig(),
+		nil,
+	)
+
+	type testCase struct {
+		name, labelName, labelValue, outLabel, outValue string
+	}
+
+	testCases := []testCase{
+		{
+			name:       "k8sIP",
+			labelName:  "k8s.pod.ip",
+			labelValue: "1.1.1.1",
+			outLabel:   "k8s.pod.ip",
+			outValue:   "1.1.1.1",
+		},
+		{
+			name:       "client IP",
+			labelName:  "ip",
+			labelValue: "2.2.2.2",
+			outLabel:   "ip",
+			outValue:   "2.2.2.2",
+		},
+	}
+	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
+		kp.podResourceAssociations = nil
+		kp.podDatapointAssociations = []kube.Association{
+			{
+				Name: "k8s.pod.ip",
+				Sources: []kube.AssociationSource{
+					{
+						From: "datapoint_attribute",
+						Name: "k8s.pod.ip",
+					},
+				},
+			},
+			{
+				Name: "k8s.pod.ip",
+				Sources: []kube.AssociationSource{
+					{
+						From: "datapoint_attribute",
+						Name: "ip",
+					},
+				},
+			},
+		}
+	})
+
+	for i, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			metrics := generateMetrics(withDatapointAttribute(tc.labelName, tc.labelValue))
+
+			m.testConsume(ctx, ptrace.NewTraces(), metrics, plog.NewLogs(), nil)
+			m.assertBatchesLen(i + 1)
+			m.assertMetricDatapoint(i, func(dp pmetric.NumberDataPoint) {
+				value, ok := dp.Attributes().Get(tc.outLabel)
+				assert.True(t, ok)
+				assert.EqualValues(t, tc.outValue, value.Str())
+			})
+		})
+	}
+}
+
 func TestPodUID(t *testing.T) {
 	m := newMultiTest(
 		t,
@@ -634,7 +719,7 @@ func TestPodUID(t *testing.T) {
 		nil,
 	)
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Sources: []kube.AssociationSource{
 					{
@@ -686,7 +771,7 @@ func TestAddPodLabels(t *testing.T) {
 		},
 	}
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Sources: []kube.AssociationSource{
 					{
@@ -763,7 +848,7 @@ func TestAddNamespaceLabels(t *testing.T) {
 		},
 	}
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Sources: []kube.AssociationSource{
 					{
@@ -835,7 +920,7 @@ func TestAddNodeLabels(t *testing.T) {
 		},
 	}
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Sources: []kube.AssociationSource{
 					{
@@ -890,7 +975,7 @@ func TestProcessorAddContainerAttributes(t *testing.T) {
 		{
 			name: "all-by-name",
 			op: func(kp *kubernetesprocessor) {
-				kp.podAssociations = []kube.Association{
+				kp.podResourceAssociations = []kube.Association{
 					{
 						Name: "k8s.pod.uid",
 						Sources: []kube.AssociationSource{
@@ -927,7 +1012,7 @@ func TestProcessorAddContainerAttributes(t *testing.T) {
 		{
 			name: "all-by-id",
 			op: func(kp *kubernetesprocessor) {
-				kp.podAssociations = []kube.Association{
+				kp.podResourceAssociations = []kube.Association{
 					{
 						Name: "k8s.pod.uid",
 						Sources: []kube.AssociationSource{
@@ -965,7 +1050,7 @@ func TestProcessorAddContainerAttributes(t *testing.T) {
 		{
 			name: "image-only",
 			op: func(kp *kubernetesprocessor) {
-				kp.podAssociations = []kube.Association{
+				kp.podResourceAssociations = []kube.Association{
 					{
 						Name: "k8s.pod.uid",
 						Sources: []kube.AssociationSource{
@@ -1143,7 +1228,7 @@ func TestProcessorPicksUpPassthoughPodIp(t *testing.T) {
 	)
 
 	m.kubernetesProcessorOperation(func(kp *kubernetesprocessor) {
-		kp.podAssociations = []kube.Association{
+		kp.podResourceAssociations = []kube.Association{
 			{
 				Name: "k8s.pod.ip",
 				Sources: []kube.AssociationSource{
@@ -1270,7 +1355,7 @@ func TestMetricsProcessorHostnameWithPodAssociation(t *testing.T) {
 	err = p.Start(context.Background(), componenttest.NewNopHost())
 	require.NoError(t, err)
 	kc := kp.kc.(*fakeClient)
-	kp.podAssociations = []kube.Association{
+	kp.podResourceAssociations = []kube.Association{
 		{
 			Sources: []kube.AssociationSource{
 				{

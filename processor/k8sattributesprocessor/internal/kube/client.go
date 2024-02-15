@@ -738,7 +738,7 @@ func (c *WatchClient) getIdentifiersFromAssoc(pod *Pod) []PodIdentifier {
 					break
 				}
 				ret[i] = PodIdentifierAttributeFromSource(source, pod.Address)
-			case source.From == ResourceSource:
+			case source.From == ResourceSource || source.From == DatapointSource:
 				attr := ""
 				switch source.Name {
 				case conventions.AttributeK8SNamespaceName:
