@@ -102,7 +102,11 @@ func (kp *kubernetesprocessor) processMetrics(ctx context.Context, md pmetric.Me
 	rm := md.ResourceMetrics()
 	for i := 0; i < rm.Len(); i++ {
 		resource := rm.At(i)
-		kp.processResource(ctx, resource.Resource())
+		// Do not run resources if there are only pod datapoint associations, but do run them if
+		// resource associations are set or both resource and datapoints are empty
+		if len(kp.podResourceAssociations) > 0 || len(kp.podDatapointAssociations) == 0 {
+			kp.processResource(ctx, resource.Resource())
+		}
 		kp.processResourceDatapoints(ctx, resource.ScopeMetrics())
 	}
 
